@@ -84,7 +84,14 @@ class DetectorBackboneWithFPN(nn.Module):
         self.fpn_params = nn.ModuleDict()
 
         # Replace "pass" statement with your code
-        pass
+        self.lateral_c3 = nn.Conv2d(dummy_out_shapes[0][1][1], out_channels, kernel_size=1, stride=1)
+        self.lateral_c4 = nn.Conv2d(dummy_out_shapes[1][1][1], out_channels, kernel_size=1, stride=1)
+        self.lateral_c5 = nn.Conv2d(dummy_out_shapes[2][1][1], out_channels, kernel_size=1, stride=1) 
+        
+        self.output_p3 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.output_p4 = nn.Conv2d(out_channels, out_channels, kernel_size=3,stride=1, padding=1)
+        self.output_p5 = nn.Conv2d(out_channels, out_channels, kernel_size=3,stride=1, padding=1)
+        
         ######################################################################
         #                            END OF YOUR CODE                        #
         ######################################################################
@@ -111,7 +118,9 @@ class DetectorBackboneWithFPN(nn.Module):
         ######################################################################
 
         # Replace "pass" statement with your code
-        pass
+        fpn_feats["p3"] = self.output_p3(self.lateral_c3(backbone_feats["c3"]))
+        fpn_feats["p4"] = self.output_p3(self.lateral_c4(backbone_feats["c4"]))
+        fpn_feats["p5"] = self.output_p3(self.lateral_c5(backbone_feats["c5"]))
         ######################################################################
         #                            END OF YOUR CODE                        #
         ######################################################################
@@ -157,7 +166,18 @@ def get_fpn_location_coords(
         # TODO: Implement logic to get location co-ordinates below.          #
         ######################################################################
         # Replace "pass" statement with your code
-        pass
+        
+        _, _, H, W = feat_shape
+        N = H * W
+        location_coords[level_name] = torch.zeros(H, W, 2)
+        stride = strides_per_fpn_level[level_name]
+        h_indices = torch.arange(H) * stride + stride // 2
+        w_indices = torch.arange(W) * stride + stride // 2
+
+        h_coords = h_indices.unsqueeze(1).repeat(1, W)
+        w_coords = w_indices.unsqueeze(1).repeat(H, 1)
+
+        location_coords[level_name] = torch.stack([h_coords.flatten(), w_coords.flatten()], dim=1)
         ######################################################################
         #                             END OF YOUR CODE                       #
         ######################################################################
@@ -196,7 +216,37 @@ def nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float = 0.5):
     # github.com/pytorch/vision/blob/main/torchvision/csrc/ops/cpu/nms_kernel.cpp
     #############################################################################
     # Replace "pass" statement with your code
-    pass
+    
+    N = boxes.shape[0]
+    remain_bool = torch.ones(N, dtype=torch.bool)
+    keep = []
+    i=0
+    while remain_bool.any():
+        _, max_index = torch.max(scores[remain_bool], dim=0)
+        remain_bool[max_index] = False
+        keep.append(max_index)
+        x1, y1, x2, y2 = boxes[max_index]
+        area = (x2 - x1) * (y2 - y1)    
+
+        for n in range(N):
+            if remain_bool[n] == True:
+                x1_n, y1_n, x2_n, y2_n = boxes[n]
+                area_n = (x2_n - x1_n) * (y2_n - y1_n)
+                xx1 = torch.max(x1, x1_n)
+                yy1 = torch.max(y1, y1_n)
+                xx2 = torch.min(x2, x2_n)
+                yy2 = torch.min(y2, y2_n)
+
+                overlap = torch.clamp(xx2 - xx1, min=0) * torch.clamp(yy2 - yy1, min=0)
+                iou = overlap / (area + area_n - overlap)
+                if iou < iou_threshold:
+                    keep.append(n)
+                    remain_bool[n] = False
+        
+        i += 1
+    keep = torch.tensor(keep, dtype=torch.long)
+
+
     #############################################################################
     #                              END OF YOUR CODE                             #
     #############################################################################

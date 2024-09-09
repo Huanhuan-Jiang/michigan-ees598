@@ -1,0 +1,7 @@
+.pdf
+__pycache__
+.git
+A4/VOCdevkit/
+*.json
+*.tar
+A4/mAP

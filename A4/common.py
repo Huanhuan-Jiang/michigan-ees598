@@ -11,6 +11,7 @@ from torch import nn
 from torch.nn import functional as F
 from torchvision import models
 from torchvision.models import feature_extraction
+from torchvision import ops
 
 
 def hello_common():
@@ -273,5 +274,5 @@ def class_spec_nms(
     max_coordinate = boxes.max()
     offsets = class_ids.to(boxes) * (max_coordinate + torch.tensor(1).to(boxes))
     boxes_for_nms = boxes + offsets[:, None]
-    keep = nms(boxes_for_nms, scores, iou_threshold)
+    keep = ops.nms(boxes_for_nms, scores, iou_threshold)
     return keep

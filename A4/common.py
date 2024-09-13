@@ -209,7 +209,7 @@ def nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float = 0.5):
     #       1. Select the highest-scoring box among the remaining ones,         #
     #          which has not been chosen in this step before                    #
     #       2. Eliminate boxes with IoU > threshold                             #
-    #       3. If any boxes remain, GOTO 1                                      #
+    #       3. If any boxes remain, GOTO 1                                       #
     #       Your implementation should not depend on a specific device type;    #
     #       you can use the device of the input if necessary.                   #
     # HINT: You can refer to the torchvision library code:                      #
@@ -220,16 +220,19 @@ def nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float = 0.5):
     N = boxes.shape[0]
     remain_bool = torch.ones(N, dtype=torch.bool)
     keep = []
-    i=0
-    while remain_bool.any():
-        _, max_index = torch.max(scores[remain_bool], dim=0)
+    while remain_bool.sum():
+        filtered_scores = scores[remain_bool]
+        _, max_index_filtered = torch.max(filtered_scores, dim=0)
+        max_index = torch.nonzero(remain_bool, as_tuple=True)[0][max_index_filtered]
         remain_bool[max_index] = False
         keep.append(max_index)
         x1, y1, x2, y2 = boxes[max_index]
-        area = (x2 - x1) * (y2 - y1)    
+        area = (x2 - x1) * (y2 - y1)
 
-        for n in range(N):
-            if remain_bool[n] == True:
+        remaining_indices = torch.nonzero(remain_bool, as_tuple=True)[0]
+
+        for i in range(remaining_indices.size(0)):
+                n = remaining_indices[i]
                 x1_n, y1_n, x2_n, y2_n = boxes[n]
                 area_n = (x2_n - x1_n) * (y2_n - y1_n)
                 xx1 = torch.max(x1, x1_n)
@@ -239,11 +242,8 @@ def nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float = 0.5):
 
                 overlap = torch.clamp(xx2 - xx1, min=0) * torch.clamp(yy2 - yy1, min=0)
                 iou = overlap / (area + area_n - overlap)
-                if iou < iou_threshold:
-                    keep.append(n)
+                if iou > iou_threshold:
                     remain_bool[n] = False
-        
-        i += 1
     keep = torch.tensor(keep, dtype=torch.long)
 
 

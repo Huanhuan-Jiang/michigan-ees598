@@ -218,7 +218,7 @@ def nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float = 0.5):
     # Replace "pass" statement with your code
     
     N = boxes.shape[0]
-    remain_bool = torch.ones(N, dtype=torch.bool)
+    remain_bool = torch.ones(N, dtype=torch.bool, device=boxes.device)
     keep = []
     while remain_bool.sum():
         filtered_scores = scores[remain_bool]
@@ -226,24 +226,25 @@ def nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float = 0.5):
         max_index = torch.nonzero(remain_bool, as_tuple=True)[0][max_index_filtered]
         remain_bool[max_index] = False
         keep.append(max_index)
-        x1, y1, x2, y2 = boxes[max_index]
-        area = (x2 - x1) * (y2 - y1)
+        xm1, ym1, xm2, ym2 = boxes[max_index]
+        area = (xm2 - xm1) * (ym2 - ym1)
 
         remaining_indices = torch.nonzero(remain_bool, as_tuple=True)[0]
+        remaining_boxes = boxes[remaining_indices]
 
-        for i in range(remaining_indices.size(0)):
-                n = remaining_indices[i]
-                x1_n, y1_n, x2_n, y2_n = boxes[n]
-                area_n = (x2_n - x1_n) * (y2_n - y1_n)
-                xx1 = torch.max(x1, x1_n)
-                yy1 = torch.max(y1, y1_n)
-                xx2 = torch.min(x2, x2_n)
-                yy2 = torch.min(y2, y2_n)
+        x1, y1, x2, y2 = remaining_boxes.unbind(dim=1)
+        areas = (x2 - x1) * (y2 - y1)
+        xx1 = torch.max(xm1, x1)
+        yy1 = torch.max(ym1, y1)
+        xx2 = torch.min(xm2, x2)
+        yy2 = torch.min(ym2, y2)
 
-                overlap = torch.clamp(xx2 - xx1, min=0) * torch.clamp(yy2 - yy1, min=0)
-                iou = overlap / (area + area_n - overlap)
-                if iou > iou_threshold:
-                    remain_bool[n] = False
+        overlap = torch.clamp(xx2 - xx1, min=0) * torch.clamp(yy2 - yy1, min=0)
+        iou = overlap / (area + areas - overlap)
+        
+        indices = torch.nonzero(iou > iou_threshold).squeeze()
+        eliminated_indices = remaining_indices[indices]
+        remain_bool[eliminated_indices] = False
     keep = torch.tensor(keep, dtype=torch.long)
 
 

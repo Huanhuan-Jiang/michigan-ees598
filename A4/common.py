@@ -233,14 +233,14 @@ def nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float = 0.5):
         remaining_boxes = boxes[remaining_indices]
 
         x1, y1, x2, y2 = remaining_boxes.unbind(dim=1)
-        areas = (x2 - x1) * (y2 - y1)
+        areas = torch.clamp((x2 - x1) * (y2 - y1), min=0)
         xx1 = torch.max(xm1, x1)
         yy1 = torch.max(ym1, y1)
         xx2 = torch.min(xm2, x2)
         yy2 = torch.min(ym2, y2)
 
         overlap = torch.clamp(xx2 - xx1, min=0) * torch.clamp(yy2 - yy1, min=0)
-        iou = overlap / (area + areas - overlap)
+        iou = overlap / torch.clamp((area + areas - overlap), min=1e-6)
         
         indices = torch.nonzero(iou > iou_threshold).squeeze()
         eliminated_indices = remaining_indices[indices]

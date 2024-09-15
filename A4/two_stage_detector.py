@@ -211,7 +211,16 @@ def iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     # TODO: Implement the IoU function here.                                 #
     ##########################################################################
     # Replace "pass" statement with your code
-    pass
+    x1, y1, x2, y2 = boxes1.unbind(dim=1)
+    area1 = (x2 - x1) * (y2 - y1)
+    x21, y21, x22, y22 = boxes2.ubind(dim=1)
+    area2 = (x22 - x21) * (y22 - y21)
+    xx1 = torch.max(x1, x21)
+    yy1 = torch.max(y1, y21)
+    xx2 = torch.min(x2, x22)
+    yy2 = torch.min(y2, y22)
+    overlap = (xx2 - xx1) * (yy2 - yy1)
+    iou = overlap / (area1 + area2 - overlap)
     ##########################################################################
     #                             END OF YOUR CODE                           #
     ##########################################################################

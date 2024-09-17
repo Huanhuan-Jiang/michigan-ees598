@@ -701,19 +701,23 @@ class RPN(nn.Module):
             # Feel free to delete this line: (but keep variable names same)
             loss_obj, loss_box = None, None
             # Replace "pass" statement with your code
-            num_samples = torch.sum(matched_gt_boxes[-1] >= -1)
+            num_fg = torch.sum(matched_gt_boxes[:, 4] >= 0)
+
+            #print('num_fg', num_fg)
             fg_idx, bg_idx = sample_rpn_training(
                 matched_gt_boxes,
-                num_samples,
+                num_fg,
                 fg_fraction=0.5
             )
             
             samples_idx = torch.cat((fg_idx, bg_idx))
             sampled_anchor_boxes = anchor_boxes[samples_idx]
             sampled_gt_boxes = matched_gt_boxes[samples_idx]
-            gt_obj_logits = sampled_gt_boxes[-1]
+            gt_obj_logits = sampled_gt_boxes[:, 4]
             #print('sampled_anchor_boxes',sampled_anchor_boxes.shape)
             #print('sampled_gt_boxes', sampled_gt_boxes.shape)
+            #print('matched_gt_boxes', matched_gt_boxes.shape)
+            #print('pred_boxreg_deltas', pred_boxreg_deltas.shape)
             gt_boxreg_deltas = rcnn_get_deltas_from_anchors(
                 sampled_anchor_boxes,
                 sampled_gt_boxes[:, :4]
@@ -721,6 +725,27 @@ class RPN(nn.Module):
 
             sampled_pred_obj_logits = pred_obj_logits[samples_idx]
             sampled_pred_boxreg_deltas = pred_boxreg_deltas[samples_idx]
+            #print('num_fg 2', num_fg)
+            #print('sampled_pred_obj_logits', sampled_pred_obj_logits.shape)
+            #print('sampled_pred_boxreg_deltas', sampled_pred_boxreg_deltas.shape)
+            #print('gt_obj_logits', gt_obj_logits.shape)
+            #print('gt_boxreg_deltas', gt_boxreg_deltas.shape)
+            #print('batch_size_per_image', self.batch_size_per_image) # 16
+            #print('num_images', num_images)
+
+            has_nan = torch.isnan(sampled_pred_obj_logits).any()
+
+            has_inf = torch.isinf(sampled_pred_obj_logits).any()
+
+            if has_nan:
+                print("The tensor contains NaN values.")
+            else:
+                print("The tensor does not contain NaN values.")
+
+            if has_inf:
+                print("The tensor contains infinite values.")
+            else:
+                print("The tensor does not contain infinite values.")
 
             loss_obj = F.binary_cross_entropy_with_logits(
                 sampled_pred_obj_logits,
@@ -732,14 +757,32 @@ class RPN(nn.Module):
                 gt_boxreg_deltas,
                 reduction="none"
             )
-
+            #print('loss_box', loss_box.shape)
+            #print(bg_idx)
+            has_negative_or_zero = torch.any(bg_idx <= 0).item()
+            #print('num_fg 3', num_fg)
+            #if has_negative_or_zero:
+            #    print("The tensor contains a negative or zero value.")
+            #else:
+            #    print("The tensor does not contain any negative or zero values.")
+            
             ##################################################################
             #                         END OF YOUR CODE                       #
             ##################################################################
 
             # Sum losses and average by num(foreground + background) anchors.
             # In training code, we simply add these two and call `.backward()`
-            total_batch_size = self.batch_size_per_image * num_images
+            
+            #print('last step')
+            #print('self.batch_size_per_image', self.batch_size_per_image.dtype)
+            
+            
+            #print('num_fg 4', num_fg)
+            total_batch_size = self.batch_size_per_image * num_fg
+            #print('total_batch_size', total_batch_size)
+            #print(loss_box)
+            loss_box[num_fg//2:, :] = 0
+            #print(loss_obj.sum())
             output_dict["loss_rpn_obj"] = loss_obj.sum() / total_batch_size
             output_dict["loss_rpn_box"] = loss_box.sum() / total_batch_size
 

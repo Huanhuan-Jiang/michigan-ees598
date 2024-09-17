@@ -598,6 +598,10 @@ class RPN(nn.Module):
             feats_per_fpn_level
         )
 
+        #print('pred_obj_logits:')
+        #for key, value in pred_obj_logits.items():
+        #    print(f"{key}: shape {value.shape}")
+
         anchors_per_fpn_level = generate_fpn_anchors(
             locations_per_fpn_level,
             strides_per_fpn_level,
@@ -650,8 +654,7 @@ class RPN(nn.Module):
         # Replace "pass" statement with your code
         B = gt_boxes.shape[0]
         matched_gt_boxes = [[] for _ in range(B)]
-        #print('anchor_boxes.device', anchor_boxes.device)
-        #print('gt_boxes_per_image.device', gt_boxes_per_image.device)
+        
         anchor_boxes = anchor_boxes.to(gt_boxes.device)
         for b in range(B):
             gt_boxes_per_image = gt_boxes[b]
@@ -660,7 +663,7 @@ class RPN(nn.Module):
                 gt_boxes_per_image,
                 self.anchor_iou_thresholds
             )
-        #print('finish matched_gt_boxes')
+        
         ######################################################################
         #                           END OF YOUR CODE                         #
         ######################################################################
@@ -669,7 +672,8 @@ class RPN(nn.Module):
         matched_gt_boxes = torch.stack(matched_gt_boxes, dim=0)
 
         # Combine predictions across all FPN levels.
-        pred_obj_logits = self._cat_across_fpn_levels(pred_obj_logits)
+        pred_obj_logits = self._cat_across_fpn_levels(pred_obj_logits) #(16.3087)
+        #print('pred_obj_logits', pred_obj_logits.shape)
         pred_boxreg_deltas = self._cat_across_fpn_levels(pred_boxreg_deltas)
 
         if self.training:
@@ -681,7 +685,8 @@ class RPN(nn.Module):
             # Collapse `batch_size`, and `HWA` to a single dimension so we have
             # simple `(-1, 4 or 5)` tensors. This simplifies loss computation.
             matched_gt_boxes = matched_gt_boxes.view(-1, 5)
-            pred_obj_logits = pred_obj_logits.view(-1)
+            pred_obj_logits = pred_obj_logits.view(-1) # shape (49392)
+            #print('pred_obj_logits', pred_obj_logits.shape)
             pred_boxreg_deltas = pred_boxreg_deltas.view(-1, 4)
 
             ##################################################################
@@ -701,12 +706,11 @@ class RPN(nn.Module):
             # Feel free to delete this line: (but keep variable names same)
             loss_obj, loss_box = None, None
             # Replace "pass" statement with your code
-            num_fg = torch.sum(matched_gt_boxes[:, 4] >= 0)
+            #num_fg = torch.sum(matched_gt_boxes[:, 4] >= 0)
 
-            #print('num_fg', num_fg)
             fg_idx, bg_idx = sample_rpn_training(
                 matched_gt_boxes,
-                num_fg,
+                self.batch_size_per_image,
                 fg_fraction=0.5
             )
             
@@ -714,10 +718,12 @@ class RPN(nn.Module):
             sampled_anchor_boxes = anchor_boxes[samples_idx]
             sampled_gt_boxes = matched_gt_boxes[samples_idx]
             gt_obj_logits = sampled_gt_boxes[:, 4]
+            
             #print('sampled_anchor_boxes',sampled_anchor_boxes.shape)
             #print('sampled_gt_boxes', sampled_gt_boxes.shape)
             #print('matched_gt_boxes', matched_gt_boxes.shape)
             #print('pred_boxreg_deltas', pred_boxreg_deltas.shape)
+            
             gt_boxreg_deltas = rcnn_get_deltas_from_anchors(
                 sampled_anchor_boxes,
                 sampled_gt_boxes[:, :4]
@@ -725,27 +731,31 @@ class RPN(nn.Module):
 
             sampled_pred_obj_logits = pred_obj_logits[samples_idx]
             sampled_pred_boxreg_deltas = pred_boxreg_deltas[samples_idx]
-            #print('num_fg 2', num_fg)
+            
             #print('sampled_pred_obj_logits', sampled_pred_obj_logits.shape)
             #print('sampled_pred_boxreg_deltas', sampled_pred_boxreg_deltas.shape)
             #print('gt_obj_logits', gt_obj_logits.shape)
             #print('gt_boxreg_deltas', gt_boxreg_deltas.shape)
-            #print('batch_size_per_image', self.batch_size_per_image) # 16
             #print('num_images', num_images)
 
-            has_nan = torch.isnan(sampled_pred_obj_logits).any()
+            nan_indices = torch.isnan(pred_obj_logits).nonzero(as_tuple=True)[0]
 
-            has_inf = torch.isinf(sampled_pred_obj_logits).any()
+            if nan_indices.numel() > 0:
+                print("The tensor contains NaN values at indices:", nan_indices)
+                for idx in nan_indices:
+                    print(f"Index: {idx.item()}, Value: {pred_obj_logits[idx].item()}")
 
-            if has_nan:
-                print("The tensor contains NaN values.")
-            else:
-                print("The tensor does not contain NaN values.")
+            #has_inf = torch.isinf(sampled_pred_obj_logits).any()
 
-            if has_inf:
-                print("The tensor contains infinite values.")
-            else:
-                print("The tensor does not contain infinite values.")
+            #if has_nan:
+            #    print("The tensor contains NaN values.")
+            #else:
+            #    print("The tensor does not contain NaN values.")
+
+            #if has_inf:
+            #    print("The tensor contains infinite values.")
+            #else:
+            #    print("The tensor does not contain infinite values.")
 
             loss_obj = F.binary_cross_entropy_with_logits(
                 sampled_pred_obj_logits,
@@ -758,9 +768,9 @@ class RPN(nn.Module):
                 reduction="none"
             )
             #print('loss_box', loss_box.shape)
-            #print(bg_idx)
-            has_negative_or_zero = torch.any(bg_idx <= 0).item()
-            #print('num_fg 3', num_fg)
+            
+            #has_negative_or_zero = torch.any(bg_idx <= 0).item()
+            
             #if has_negative_or_zero:
             #    print("The tensor contains a negative or zero value.")
             #else:
@@ -774,15 +784,13 @@ class RPN(nn.Module):
             # In training code, we simply add these two and call `.backward()`
             
             #print('last step')
-            #print('self.batch_size_per_image', self.batch_size_per_image.dtype)
-            
-            
-            #print('num_fg 4', num_fg)
-            total_batch_size = self.batch_size_per_image * num_fg
+
+            total_batch_size = self.batch_size_per_image * num_images
             #print('total_batch_size', total_batch_size)
-            #print(loss_box)
-            loss_box[num_fg//2:, :] = 0
-            #print(loss_obj.sum())
+            #print(loss_box.shape) #(16,4)
+            loss_box[len(fg_idx):, :] = 0
+            #print('loss_obj.sum', loss_obj.sum())
+            #print('loss_box.sum', loss_box.sum())
             output_dict["loss_rpn_obj"] = loss_obj.sum() / total_batch_size
             output_dict["loss_rpn_box"] = loss_box.sum() / total_batch_size
 

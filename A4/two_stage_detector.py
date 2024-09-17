@@ -357,7 +357,7 @@ def rcnn_get_deltas_from_anchors(
     deltas = torch.stack((tx, ty, tw, th), dim=1)
     bn_mask = ((gt_boxes == -1).all(dim=1)) | ((gt_boxes == -1e8).all(dim=1))
     deltas[bn_mask] = -1e8
-    print
+   
     ##########################################################################
     #                             END OF YOUR CODE                           #
     ##########################################################################
@@ -392,6 +392,7 @@ def rcnn_apply_deltas_to_anchors(
     ##########################################################################
     output_boxes = None
     # Replace "pass" statement with your code
+    anchors = anchors.to(deltas.device)
     px = (anchors[:, 0] + anchors[:, 2]) / 2.0
     py = (anchors[:, 1] + anchors[:, 3]) / 2.0
     pw = torch.clamp(anchors[:, 2] - anchors[:, 0], min=0)
@@ -603,6 +604,10 @@ class RPN(nn.Module):
             self.anchor_stride_scale,
             self.anchor_aspect_ratios
         )
+        #print('anchors_per_fpn_level:')
+        #for key, value in anchors_per_fpn_level.items():
+        #    print(f"{key}: shape {value.shape}")
+        
         ######################################################################
         #                           END OF YOUR CODE                         #
         ######################################################################
@@ -625,6 +630,7 @@ class RPN(nn.Module):
             pred_boxreg_deltas,
             (img_w, img_h),
         )
+        #print('finish predict_proposals')
         # Return here during inference - loss computation not required.
         if not self.training:
             return output_dict
@@ -644,14 +650,17 @@ class RPN(nn.Module):
         # Replace "pass" statement with your code
         B = gt_boxes.shape[0]
         matched_gt_boxes = [[] for _ in range(B)]
+        #print('anchor_boxes.device', anchor_boxes.device)
+        #print('gt_boxes_per_image.device', gt_boxes_per_image.device)
+        anchor_boxes = anchor_boxes.to(gt_boxes.device)
         for b in range(B):
-            anchor_boxes_per_image = anchor_boxes[b]
             gt_boxes_per_image = gt_boxes[b]
             matched_gt_boxes[b] = rcnn_match_anchors_to_gt(
                 anchor_boxes,
                 gt_boxes_per_image,
                 self.anchor_iou_thresholds
             )
+        #print('finish matched_gt_boxes')
         ######################################################################
         #                           END OF YOUR CODE                         #
         ######################################################################
@@ -701,20 +710,25 @@ class RPN(nn.Module):
             
             samples_idx = torch.cat((fg_idx, bg_idx))
             sampled_anchor_boxes = anchor_boxes[samples_idx]
-            sampled_gt_boxes = gt_boxes[samples_idx]
+            sampled_gt_boxes = matched_gt_boxes[samples_idx]
             gt_obj_logits = sampled_gt_boxes[-1]
+            #print('sampled_anchor_boxes',sampled_anchor_boxes.shape)
+            #print('sampled_gt_boxes', sampled_gt_boxes.shape)
             gt_boxreg_deltas = rcnn_get_deltas_from_anchors(
                 sampled_anchor_boxes,
-                sampled_gt_boxes
+                sampled_gt_boxes[:, :4]
             )
 
+            sampled_pred_obj_logits = pred_obj_logits[samples_idx]
+            sampled_pred_boxreg_deltas = pred_boxreg_deltas[samples_idx]
+
             loss_obj = F.binary_cross_entropy_with_logits(
-                pred_obj_logits,
+                sampled_pred_obj_logits,
                 gt_obj_logits,
                 reduction="none"
             )
             loss_box = F.l1_loss(
-                pred_boxreg_deltas,
+                sampled_pred_boxreg_deltas,
                 gt_boxreg_deltas,
                 reduction="none"
             )
@@ -789,14 +803,14 @@ class RPN(nn.Module):
                 
                 #keep_topk_per_level = []
                 #print(level_boxreg_deltas.shape)
-                print('level_anchors.shape', level_anchors.shape)
+                #print('level_anchors.shape', level_anchors.shape)
                 #print(level_obj_logits.shape)
                 level_obj_logits_per_image = level_obj_logits[_batch_idx]
-                print('level_obj_logits_per_image.shape', level_obj_logits_per_image.shape)
+                #print('level_obj_logits_per_image.shape', level_obj_logits_per_image.shape)
                 level_boxreg_deltas_per_image = level_boxreg_deltas[_batch_idx]
                 level_boxreg_deltas_per_image = level_boxreg_deltas_per_image.view(
                         level_boxreg_deltas.shape[1], -1)
-                print('level_boxreg_deltas_per_image.shape', level_boxreg_deltas_per_image.shape)
+                #print('level_boxreg_deltas_per_image.shape', level_boxreg_deltas_per_image.shape)
                 proposals_per_image = rcnn_apply_deltas_to_anchors(
                     level_boxreg_deltas_per_image,
                     level_anchors
@@ -821,21 +835,36 @@ class RPN(nn.Module):
                     min=0,
                     max=image_size[1]
                 )
-                sorted_obj_logits, _ = torch.topk(
-                    level_obj_logits_per_image, 
-                    self.pre_nms_topk,
-                    dim=1,
-                    sorted=True
-                )
-                level_proposals_per_image[_batch_idx] = torch.topk(
-                    torchvision.ops.nms(proposals_per_image,
-                        sorted_obj_logits,
-                        self.anchor_iou_thresholds[1]),
-                    self.post_nms_topk,
-                    dim=1,
-                    sorted=True
-                )
-                
+                if len(level_obj_logits_per_image)< self.pre_nms_topk:
+                    sorted_obj_logits, sorted_indices = torch.sort(
+                        level_obj_logits_per_image
+                    )
+                else:
+                    sorted_obj_logits, sorted_indices = torch.topk(
+                        level_obj_logits_per_image, 
+                        self.pre_nms_topk,
+                        sorted=True
+                    )
+                proposals_per_image_prenms = proposals_per_image[sorted_indices]
+                sorted_indices_nms = torchvision.ops.nms(
+                       proposals_per_image_prenms,
+                       sorted_obj_logits,
+                       self.anchor_iou_thresholds[1]
+                    )
+                sorted_obj_logits_nms = sorted_obj_logits[sorted_indices_nms]
+                proposals_per_image_postnms = proposals_per_image_prenms[sorted_indices_nms]
+                #print('sorted_obj_logits_nms.length', len(sorted_obj_logits_nms))
+                if len(sorted_obj_logits_nms) < self.post_nms_topk:
+                    level_proposals_per_image.append(proposals_per_image_postnms)
+                else:
+                    sorted_obj_logits_postnms, sorted_indices_postnms = torch.topk(
+                        sorted_obj_logits_nms,
+                        self.post_nms_topk,
+                        sorted=True
+                        )
+                    level_proposals_per_image.append(
+                        proposals_per_image_prenms[sorted_indices_postnms]
+                    )
 
                 ##############################################################
                 #                        END OF YOUR CODE                    #

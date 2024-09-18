@@ -966,8 +966,7 @@ class FasterRCNN(nn.Module):
         # Replace "pass" statement with your code
         
         cls_pred.append(nn.Flatten())
-        C = cls_pred[-1].out_channels
-        cls_pred.append(nn.Linear(C, C+1))
+        cls_pred.append(nn.Linear(stem_channels[-1]*self.roi_size[0]*self.roi_size[1], num_classes+1))
         
         ######################################################################
         #                           END OF YOUR CODE                         #
@@ -1025,10 +1024,12 @@ class FasterRCNN(nn.Module):
             roi_feats = torchvision.ops.roi_align(
                 input=level_feats,
                 boxes=level_props,
-                output_size=(7,7),
+                output_size=self.roi_size,
                 spatial_scale=level_stride,
                 aligned=True
             )
+            #print('roi_feats_per_fpn_level.shape:', roi_feats.shape)
+            #print('level_props.shape:',len(level_props))
 
             ##################################################################
             #                         END OF YOUR CODE                       #
@@ -1039,6 +1040,9 @@ class FasterRCNN(nn.Module):
         # Combine ROI feats across FPN levels, do the same with proposals.
         # shape: (batch_size * total_proposals, fpn_channels, roi_h, roi_w)
         roi_feats = self._cat_across_fpn_levels(roi_feats_per_fpn_level, dim=0)
+        #print('roi_feats.shape', roi_feats.shape)
+        #print('batch_size', num_images)
+        #print('total_proposals', total)
 
         # Obtain classification logits for all ROI features.
         # shape: (batch_size * total_proposals, num_classes)
@@ -1075,7 +1079,12 @@ class FasterRCNN(nn.Module):
             )
             gt_boxes_per_image = gt_boxes[_idx]
             # Replace "pass" statement with your code
-            pass
+            boxes = rcnn_match_anchors_to_gt(
+                proposals_per_image,
+                gt_boxes_per_image,
+                iou_thresholds=[0.5,0.5]
+            )
+            matched_gt_boxes.append(boxes)
         ######################################################################
         #                           END OF YOUR CODE                         #
         ######################################################################
@@ -1103,7 +1112,22 @@ class FasterRCNN(nn.Module):
         # Feel free to delete this line: (but keep variable names same)
         loss_cls = None
         # Replace "pass" statement with your code
-        pass
+        fg_idx, bg_idx = sample_rpn_training(
+            matched_gt_boxes,
+            num_images*self.batch_size_per_image,
+            fg_fraction=0.25
+        )
+
+        samples_idx = torch.cat((fg_idx, bg_idx))
+        sampled_gt_boxes = matched_gt_boxes[samples_idx]
+        gt_obj_logits = sampled_gt_boxes[:, -1]
+        gt_obj_logits = F.one_hot((gt_obj_logits+1).long(), num_classes=self.num_classes+1).to(torch.float32)
+
+        sampled_pred_obj_logits = pred_cls_logits[samples_idx]
+        loss_cls = F.cross_entropy(
+            sampled_pred_obj_logits, 
+            gt_obj_logits
+        )
         ######################################################################
         #                           END OF YOUR CODE                         #
         ######################################################################
@@ -1174,7 +1198,13 @@ class FasterRCNN(nn.Module):
         ######################################################################
         pred_scores, pred_classes = None, None
         # Replace "pass" statement with your code
-        pass
+        
+        pred_scores, pred_classes = torch.max(pred_cls_logits, dim=1)
+        pred_classes = pred_classes - 1
+        retain = pred_scores > test_score_thresh
+        pred_scores = pred_scores[retain]
+        pred_classes = pred_classes[retain]
+
         ######################################################################
         #                            END OF YOUR CODE                        #
         ######################################################################

@@ -92,7 +92,7 @@ class RPNPredictionNetwork(nn.Module):
 
         # Replace "pass" statement with your code
         
-        self.pred_obj = nn.Conv2d(stem_channels[-1], self.num_anchors, kernel_size=1)
+        self.pred_obj = nn.Conv2d(stem_channels[-1], self.num_anchors*1, kernel_size=1)
         self.pred_box = nn.Conv2d(stem_channels[-1], self.num_anchors*4, kernel_size=1)
 
         weight_shape = self.pred_obj.weight.shape
@@ -134,10 +134,12 @@ class RPNPredictionNetwork(nn.Module):
 
         # Replace "pass" statement with your code
         for level_name, feat in feats_per_fpn_level.items():
-            if not isinstance(feat, torch.Tensor):
-                raise TypeError(f"Expected feat to be a Tensor, but got {type(feat)}")
-            object_logits[level_name] = self.pred_obj(self.stem_rpn(feat)).view(feat.shape[0], -1)
-            boxreg_deltas[level_name] = self.pred_box(self.stem_rpn(feat)).view(feat.shape[0], -1, 4)
+            B = feat.shape[0]
+            H = feat.shape[2]
+            W = feat.shape[3]
+            object_logits[level_name] = self.pred_obj(self.stem_rpn(feat)).view(B, -1)
+            boxreg_deltas[level_name] = self.pred_box(self.stem_rpn(feat)).permute(
+                0, 2, 3, 1).view(B, H, W, self.num_anchors, 4).flatten(start_dim=1, end_dim=3)
         
         ######################################################################
         #                           END OF YOUR CODE                         #
@@ -599,7 +601,8 @@ class RPN(nn.Module):
 
         locations_per_fpn_level = get_fpn_location_coords(
             shape_per_fpn_level,
-            strides_per_fpn_level
+            strides_per_fpn_level,
+            device=feats_per_fpn_level["p3"].device
             )
         
         pred_obj_logits, pred_boxreg_deltas = self.pred_net(
@@ -718,7 +721,7 @@ class RPN(nn.Module):
 
             fg_idx, bg_idx = sample_rpn_training(
                 matched_gt_boxes,
-                self.batch_size_per_image,
+                num_images * self.batch_size_per_image,
                 fg_fraction=0.5
             )
             
@@ -727,47 +730,17 @@ class RPN(nn.Module):
             sampled_gt_boxes = matched_gt_boxes[samples_idx]
             gt_obj_logits = sampled_gt_boxes[:, 4]
             
-            #print('sampled_anchor_boxes',sampled_anchor_boxes.shape)
-            #print('sampled_gt_boxes', sampled_gt_boxes.shape)
-            #print('matched_gt_boxes', matched_gt_boxes.shape)
-            #print('pred_boxreg_deltas', pred_boxreg_deltas.shape)
-            
             gt_boxreg_deltas = rcnn_get_deltas_from_anchors(
                 sampled_anchor_boxes,
-                sampled_gt_boxes[:, :4]
+                sampled_gt_boxes
             )
 
             sampled_pred_obj_logits = pred_obj_logits[samples_idx]
             sampled_pred_boxreg_deltas = pred_boxreg_deltas[samples_idx]
             
-            #print('sampled_pred_obj_logits', sampled_pred_obj_logits.shape)
-            #print('sampled_pred_boxreg_deltas', sampled_pred_boxreg_deltas.shape)
-            #print('gt_obj_logits', gt_obj_logits.shape)
-            #print('gt_boxreg_deltas', gt_boxreg_deltas.shape)
-            #print('num_images', num_images)
-
-            nan_indices = torch.isnan(pred_obj_logits).nonzero(as_tuple=True)[0]
-
-            if nan_indices.numel() > 0:
-                print("The tensor contains NaN values at indices:", nan_indices)
-                for idx in nan_indices:
-                    print(f"Index: {idx.item()}, Value: {pred_obj_logits[idx].item()}")
-
-            #has_inf = torch.isinf(sampled_pred_obj_logits).any()
-
-            #if has_nan:
-            #    print("The tensor contains NaN values.")
-            #else:
-            #    print("The tensor does not contain NaN values.")
-
-            #if has_inf:
-            #    print("The tensor contains infinite values.")
-            #else:
-            #    print("The tensor does not contain infinite values.")
-
             loss_obj = F.binary_cross_entropy_with_logits(
-                sampled_pred_obj_logits,
-                gt_obj_logits,
+                sampled_pred_obj_logits.view(-1),
+                torch.where(sampled_gt_boxes[:,-1]>=0, 1, 0).to(torch.float32),
                 reduction="none"
             )
             loss_box = F.l1_loss(
@@ -775,14 +748,6 @@ class RPN(nn.Module):
                 gt_boxreg_deltas,
                 reduction="none"
             )
-            #print('loss_box', loss_box.shape)
-            
-            #has_negative_or_zero = torch.any(bg_idx <= 0).item()
-            
-            #if has_negative_or_zero:
-            #    print("The tensor contains a negative or zero value.")
-            #else:
-            #    print("The tensor does not contain any negative or zero values.")
             
             ##################################################################
             #                         END OF YOUR CODE                       #
@@ -791,14 +756,8 @@ class RPN(nn.Module):
             # Sum losses and average by num(foreground + background) anchors.
             # In training code, we simply add these two and call `.backward()`
             
-            #print('last step')
-
             total_batch_size = self.batch_size_per_image * num_images
-            #print('total_batch_size', total_batch_size)
-            #print(loss_box.shape) #(16,4)
-            loss_box[len(fg_idx):, :] = 0
-            #print('loss_obj.sum', loss_obj.sum())
-            #print('loss_box.sum', loss_box.sum())
+            loss_box[len(fg_idx):, :] *= 0.0
             output_dict["loss_rpn_obj"] = loss_obj.sum() / total_batch_size
             output_dict["loss_rpn_box"] = loss_box.sum() / total_batch_size
 
@@ -860,16 +819,11 @@ class RPN(nn.Module):
                 ##############################################################
                 # Replace "pass" statement with your code
                 
-                #keep_topk_per_level = []
-                #print(level_boxreg_deltas.shape)
-                #print('level_anchors.shape', level_anchors.shape)
-                #print(level_obj_logits.shape)
                 level_obj_logits_per_image = level_obj_logits[_batch_idx]
-                #print('level_obj_logits_per_image.shape', level_obj_logits_per_image.shape)
                 level_boxreg_deltas_per_image = level_boxreg_deltas[_batch_idx]
                 level_boxreg_deltas_per_image = level_boxreg_deltas_per_image.view(
                         level_boxreg_deltas.shape[1], -1)
-                #print('level_boxreg_deltas_per_image.shape', level_boxreg_deltas_per_image.shape)
+                
                 proposals_per_image = rcnn_apply_deltas_to_anchors(
                     level_boxreg_deltas_per_image,
                     level_anchors
@@ -912,7 +866,7 @@ class RPN(nn.Module):
                     )
                 sorted_obj_logits_nms = sorted_obj_logits[sorted_indices_nms]
                 proposals_per_image_postnms = proposals_per_image_prenms[sorted_indices_nms]
-                #print('sorted_obj_logits_nms.length', len(sorted_obj_logits_nms))
+                
                 if len(sorted_obj_logits_nms) < self.post_nms_topk:
                     level_proposals_per_image.append(proposals_per_image_postnms)
                 else:

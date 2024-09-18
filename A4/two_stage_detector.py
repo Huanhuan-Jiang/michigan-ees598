@@ -944,7 +944,18 @@ class FasterRCNN(nn.Module):
         # `FCOSPredictionNetwork` for this code block.
         cls_pred = []
         # Replace "pass" statement with your code
-        pass
+        
+        num_layers = len(stem_channels)
+        channel_in = self.backbone.out_channels
+        for n in range(num_layers):
+            channel_out = stem_channels[n]
+            cls_pred.append(
+                nn.Conv2d(channel_in, channel_out, kernel_size=3, stride=1, padding=1)
+                )
+            nn.init.normal_(cls_pred[2*n].weight.data, mean=0.0, std=0.01)
+            nn.init.constant_(cls_pred[2*n].bias.data, 0)
+            cls_pred.append(nn.ReLU())
+            channel_in = channel_out
 
         ######################################################################
         # TODO: Add an `nn.Flatten` module to `cls_pred`, followed by a linear
@@ -953,7 +964,11 @@ class FasterRCNN(nn.Module):
         # shape from `nn.Flatten` layer.
         ######################################################################
         # Replace "pass" statement with your code
-        pass
+        
+        cls_pred.append(nn.Flatten())
+        C = cls_pred[-1].out_channels
+        cls_pred.append(nn.Linear(C, C+1))
+        
         ######################################################################
         #                           END OF YOUR CODE                         #
         ######################################################################
@@ -1006,7 +1021,15 @@ class FasterRCNN(nn.Module):
             level_stride = self.backbone.fpn_strides[level_name]
 
             # Replace "pass" statement with your code
-            pass
+            
+            roi_feats = torchvision.ops.roi_align(
+                input=level_feats,
+                boxes=level_props,
+                output_size=(7,7),
+                spatial_scale=level_stride,
+                aligned=True
+            )
+
             ##################################################################
             #                         END OF YOUR CODE                       #
             ##################################################################

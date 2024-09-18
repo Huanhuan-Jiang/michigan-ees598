@@ -95,6 +95,14 @@ class RPNPredictionNetwork(nn.Module):
         self.pred_obj = nn.Conv2d(stem_channels[-1], self.num_anchors, kernel_size=1)
         self.pred_box = nn.Conv2d(stem_channels[-1], self.num_anchors*4, kernel_size=1)
 
+        weight_shape = self.pred_obj.weight.shape
+        self.pred_obj.weight.data = torch.randn(weight_shape) * 0.01
+        self.pred_obj.bias.data.fill_(0)
+        
+        weight_shape = self.pred_box.weight.shape
+        self.pred_box.weight.data = torch.randn(weight_shape) * 0.01
+        self.pred_box.bias.data.fill_(0)
+        
         ######################################################################
         #                           END OF YOUR CODE                         #
         ######################################################################

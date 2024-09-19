@@ -748,6 +748,10 @@ class RPN(nn.Module):
                 gt_boxreg_deltas,
                 reduction="none"
             )
+            #loss_box[gt_boxreg_deltas==-1e8] *=0
+            loss_box[len(fg_idx):, :] *= 0.0
+            #print(torch.where((gt_boxreg_deltas == -1e8).all(dim=1))[0])
+            #print(len(fg_idx))
             
             ##################################################################
             #                         END OF YOUR CODE                       #
@@ -757,7 +761,7 @@ class RPN(nn.Module):
             # In training code, we simply add these two and call `.backward()`
             
             total_batch_size = self.batch_size_per_image * num_images
-            loss_box[len(fg_idx):, :] *= 0.0
+            
             output_dict["loss_rpn_obj"] = loss_obj.sum() / total_batch_size
             output_dict["loss_rpn_box"] = loss_box.sum() / total_batch_size
 
@@ -966,7 +970,7 @@ class FasterRCNN(nn.Module):
         # Replace "pass" statement with your code
         
         cls_pred.append(nn.Flatten())
-        cls_pred.append(nn.Linear(stem_channels[-1]*self.roi_size[0]*self.roi_size[1], num_classes+1))
+        cls_pred.append(nn.Linear(stem_channels[-1]*self.roi_size[0]*self.roi_size[1], self.num_classes+1))
         
         ######################################################################
         #                           END OF YOUR CODE                         #
@@ -1025,7 +1029,7 @@ class FasterRCNN(nn.Module):
                 input=level_feats,
                 boxes=level_props,
                 output_size=self.roi_size,
-                spatial_scale=level_stride,
+                spatial_scale=1/level_stride,
                 aligned=True
             )
             #print('roi_feats_per_fpn_level.shape:', roi_feats.shape)
@@ -1082,7 +1086,7 @@ class FasterRCNN(nn.Module):
             boxes = rcnn_match_anchors_to_gt(
                 proposals_per_image,
                 gt_boxes_per_image,
-                iou_thresholds=[0.5,0.5]
+                iou_thresholds=(0.5,0.5)
             )
             matched_gt_boxes.append(boxes)
         ######################################################################
@@ -1199,11 +1203,14 @@ class FasterRCNN(nn.Module):
         pred_scores, pred_classes = None, None
         # Replace "pass" statement with your code
         
-        pred_scores, pred_classes = torch.max(pred_cls_logits, dim=1)
-        pred_classes = pred_classes - 1
+        pred_scores = torch.softmax(pred_cls_logits, dim=1)
+        pred_scores, pred_classes = torch.max(pred_scores, dim=1)
         retain = pred_scores > test_score_thresh
         pred_scores = pred_scores[retain]
+        pred_classes = pred_classes - 1
         pred_classes = pred_classes[retain]
+
+        pred_boxes = pred_boxes[retain]
 
         ######################################################################
         #                            END OF YOUR CODE                        #

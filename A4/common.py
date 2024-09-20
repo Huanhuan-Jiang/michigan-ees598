@@ -10,8 +10,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from torchvision import models
+import torchvision
 from torchvision.models import feature_extraction
-from torchvision import ops
 
 
 def hello_common():
@@ -85,14 +85,13 @@ class DetectorBackboneWithFPN(nn.Module):
         self.fpn_params = nn.ModuleDict()
 
         # Replace "pass" statement with your code
-        self.lateral_c3 = nn.Conv2d(dummy_out_shapes[0][1][1], out_channels, kernel_size=1, stride=1)
-        self.lateral_c4 = nn.Conv2d(dummy_out_shapes[1][1][1], out_channels, kernel_size=1, stride=1)
-        self.lateral_c5 = nn.Conv2d(dummy_out_shapes[2][1][1], out_channels, kernel_size=1, stride=1) 
-        
-        self.output_p3 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
-        self.output_p4 = nn.Conv2d(out_channels, out_channels, kernel_size=3,stride=1, padding=1)
-        self.output_p5 = nn.Conv2d(out_channels, out_channels, kernel_size=3,stride=1, padding=1)
-        
+        self.fpn_params['conv5'] = nn.Conv2d(dummy_out['c5'].shape[1], self.out_channels, 1)
+        self.fpn_params['conv4'] = nn.Conv2d(dummy_out['c4'].shape[1], self.out_channels, 1)
+        self.fpn_params['conv3'] = nn.Conv2d(dummy_out['c3'].shape[1], self.out_channels, 1)
+
+        self.fpn_params['conv_out5'] = nn.Conv2d(self.out_channels, self.out_channels, 3, stride=1, padding=1)
+        self.fpn_params['conv_out4'] = nn.Conv2d(self.out_channels, self.out_channels, 3, stride=1, padding=1)
+        self.fpn_params['conv_out3'] = nn.Conv2d(self.out_channels, self.out_channels, 3, stride=1, padding=1)
         ######################################################################
         #                            END OF YOUR CODE                        #
         ######################################################################
@@ -119,9 +118,13 @@ class DetectorBackboneWithFPN(nn.Module):
         ######################################################################
 
         # Replace "pass" statement with your code
-        fpn_feats["p3"] = self.output_p3(self.lateral_c3(backbone_feats["c3"]))
-        fpn_feats["p4"] = self.output_p3(self.lateral_c4(backbone_feats["c4"]))
-        fpn_feats["p5"] = self.output_p3(self.lateral_c5(backbone_feats["c5"]))
+        out5 = self.fpn_params['conv5'](backbone_feats["c5"])
+        out4 = torch.add(F.interpolate(out5, scale_factor=2), self.fpn_params['conv4'](backbone_feats["c4"]))
+        out3 = torch.add(F.interpolate(out4, scale_factor=2), self.fpn_params['conv3'](backbone_feats["c3"]))
+
+        fpn_feats["p5"] = self.fpn_params['conv_out5'](out5)
+        fpn_feats["p4"] = self.fpn_params['conv_out4'](out4)
+        fpn_feats["p3"] = self.fpn_params['conv_out3'](out3)
         ######################################################################
         #                            END OF YOUR CODE                        #
         ######################################################################
@@ -167,18 +170,18 @@ def get_fpn_location_coords(
         # TODO: Implement logic to get location co-ordinates below.          #
         ######################################################################
         # Replace "pass" statement with your code
-        
-        _, _, H, W = feat_shape
-        N = H * W
-        location_coords[level_name] = torch.zeros(H, W, 2)
-        stride = strides_per_fpn_level[level_name]
-        h_indices = torch.arange(H) * stride + stride // 2
-        w_indices = torch.arange(W) * stride + stride // 2
+        # temp = torch.zeros(feat_shape[2], feat_shape[3], 2, dtype=dtype, device=device)
+        # for i in range(temp.shape[0]):
+        #   for j in range(temp.shape[1]):
+        #     temp[i, j, 0] = level_stride * (i+0.5)
+        #     temp[i, j, 1] = level_stride * (j+0.5)
 
-        h_coords = h_indices.unsqueeze(1).repeat(1, W)
-        w_coords = w_indices.unsqueeze(1).repeat(H, 1)
-
-        location_coords[level_name] = torch.stack([h_coords.flatten(), w_coords.flatten()], dim=1)
+        # location_coords[level_name] = temp.flatten(end_dim=1)
+        rows = level_stride * (torch.arange(feat_shape[2], dtype=dtype, device=device) + 0.5)
+        rows = rows.expand(feat_shape[2], feat_shape[3]).t()
+        cols = level_stride * (torch.arange(feat_shape[3], dtype=dtype, device=device) + 0.5)
+        cols = cols.expand(feat_shape[2], feat_shape[3])
+        location_coords[level_name] = torch.stack((cols, rows), dim=2).flatten(end_dim=1)
         ######################################################################
         #                             END OF YOUR CODE                       #
         ######################################################################
@@ -210,48 +213,49 @@ def nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float = 0.5):
     #       1. Select the highest-scoring box among the remaining ones,         #
     #          which has not been chosen in this step before                    #
     #       2. Eliminate boxes with IoU > threshold                             #
-    #       3. If any boxes remain, GOTO 1                                       #
+    #       3. If any boxes remain, GOTO 1                                      #
     #       Your implementation should not depend on a specific device type;    #
     #       you can use the device of the input if necessary.                   #
     # HINT: You can refer to the torchvision library code:                      #
     # github.com/pytorch/vision/blob/main/torchvision/csrc/ops/cpu/nms_kernel.cpp
     #############################################################################
     # Replace "pass" statement with your code
+    row_boxes = boxes.unsqueeze(dim=1) # (N, 1, 4)
+    col_boxes = boxes.unsqueeze(dim=0) # (1, N, 4)
+    tl = torch.maximum(row_boxes[:,:,:2], col_boxes[:,:,:2]) # (N,N,2)
+    br = torch.minimum(row_boxes[:,:,2:], col_boxes[:,:,2:]) # (N,N,2)
+
+    intersect = br - tl
+    invalid_mask = torch.any(intersect<0, dim=-1) # (N, N)
+    intersect = torch.prod(intersect, dim=-1) # (N, N)
+    a = row_boxes[:, :, 2:] - row_boxes[:, :, :2]
+    a = torch.prod(a, dim=-1) # (N, 1)
+    b = col_boxes[:, :, 2:] - col_boxes[:, :, :2]
+    b = torch.prod(b, dim=-1) # (1, N)
+    iou_mat = torch.div(intersect, a+b-intersect) # (N, N)
+    iou_mat[invalid_mask] = 0 
     
-    N = boxes.shape[0]
-    remain_bool = torch.ones(N, dtype=torch.bool, device=boxes.device)
+    for i in range(iou_mat.shape[0]):
+      iou_mat[i, i] = 0 # make the elements in the diagonal be zero
+
+    values, indexes = torch.sort(scores, descending=True)
+    removed = set()
     keep = []
-    while remain_bool.sum():
-        filtered_scores = scores[remain_bool]
-        _, max_index_filtered = torch.max(filtered_scores, dim=0)
-        max_index = torch.nonzero(remain_bool, as_tuple=True)[0][max_index_filtered]
-        remain_bool[max_index] = False
-        keep.append(max_index)
-        xm1, ym1, xm2, ym2 = boxes[max_index]
-        area = (xm2 - xm1) * (ym2 - ym1)
 
-        remaining_indices = torch.nonzero(remain_bool, as_tuple=True)[0]
-        remaining_boxes = boxes[remaining_indices]
+    for idx in indexes:
+      if idx in removed:
+        continue
+      removed.add(idx)
+      keep.append(idx)
 
-        x1, y1, x2, y2 = remaining_boxes.unbind(dim=1)
-        areas = torch.clamp((x2 - x1) * (y2 - y1), min=0)
-        xx1 = torch.max(xm1, x1)
-        yy1 = torch.max(ym1, y1)
-        xx2 = torch.min(xm2, x2)
-        yy2 = torch.min(ym2, y2)
+      to_remove = iou_mat[idx] > iou_threshold
+      to_remove = torch.nonzero(to_remove.view(-1)).squeeze(-1)
+      # print(to_remove)
+      iou_mat[:, to_remove] = 0
+      removed = removed.union(set(to_remove.tolist()))
 
-        overlap = torch.clamp(xx2 - xx1, min=0) * torch.clamp(yy2 - yy1, min=0)
-        iou = overlap / torch.clamp((area + areas - overlap), min=1e-6)
-        
-        indices = torch.nonzero(iou > iou_threshold).squeeze()
-        eliminated_indices = remaining_indices[indices]
-        remain_bool[eliminated_indices] = False
-    keep = torch.tensor(keep, dtype=torch.long)
-
-
-    #############################################################################
-    #                              END OF YOUR CODE                             #
-    #############################################################################
+    keep = torch.tensor(keep).to(device=boxes.device, dtype=torch.long)
+    ###################################################
     return keep
 
 
@@ -275,5 +279,5 @@ def class_spec_nms(
     max_coordinate = boxes.max()
     offsets = class_ids.to(boxes) * (max_coordinate + torch.tensor(1).to(boxes))
     boxes_for_nms = boxes + offsets[:, None]
-    keep = ops.nms(boxes_for_nms, scores, iou_threshold)
+    keep = torchvision.ops.nms(boxes_for_nms, scores, iou_threshold)
     return keep
